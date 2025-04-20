@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced AI Snake Game</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #0f0f1a;
+        }
+        
+        canvas {
+            display: block;
+            image-rendering: pixelated;
+        }
+        
+        .game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #ff5555;
+            font-family: 'Courier New', monospace;
+            font-size: 32px;
+            text-align: center;
+            text-shadow: 2px 2px 0 #000;
+            display: none;
+        }
+        
+        .score {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            color: #55ff55;
+            font-family: 'Courier New', monospace;
+            font-size: 24px;
+            text-shadow: 2px 2px 0 #000;
+        }
+        
+        .ai-info {
+            position: absolute;
+            top: 60px;
+            right: 20px;
+            color: #55ffff;
+            font-family: 'Courier New', monospace;
+            font-size: 16px;
+            text-shadow: 2px 2px 0 #000;
+            width: 300px;
+            text-align: right;
+        }
+        
+        .ai-stats {
+            position: absolute;
+            top: 100px;
+            right: 20px;
+            color: #ff55ff;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            text-shadow: 2px 2px 0 #000;
+            width: 300px;
+            text-align: right;
+        }
+        
+        @keyframes pixelate {
+            0% { filter: blur(0); }
+            50% { filter: blur(1px); }
+            100% { filter: blur(0); }
+        }
+        
+        .pixel-border {
+            border: 6px solid #5555ff;
+            box-shadow: 0 0 0 6px #ff55ff, 0 0 0 12px #55ffff;
+        }
+    </style>
+</head>
+<body class="bg-black">
+    <canvas id="gameCanvas"></canvas>
+    <div class="score" id="score">SCORE: 0</div>
+    <div class="ai-info" id="aiInfo">AI: Calculating...</div>
+    <div class="ai-stats" id="aiStats">Efficiency: --</div>
+    <div class="game-over" id="gameOver">
+        GAME OVER<br>
+        <span style="font-size: 20px;">(Screen saver will reset shortly)</span>
+    </div>
+
+    <script>
+        // Enhanced game configuration
+        const config = {
+            gridSize: 16,
+            tileSize: 30,
+            initialSpeed: 150,
+            speedIncrease: 2,
+            colors: {
+                background: '#0f0f1a',
+                head: '#006400',       // Dark green head
+                tail: '#90EE90',       // Light green tail
+                apple: '#ff0000',      // Bright red apple
+                border: '#5555ff'
+            },
+            ai: {
+                decisionInterval: 1,
+                randomness: 0.05,      // Reduced randomness (only 5% chance)
+                foodBias: 0.98,        // Very high bias toward food (98% chance)
+                historyWeight: 0.3,    // How much previous moves influence current decision
+                historyLength: 3       // Number of previous moves to consider
+            },
+            foodPlacement: {
+                minDistance: 2,
+                preferredDistance: 4
+            }
+        };
+
+        // Game state
+        let snake = [];
+        let direction = { x: 1, y: 0 };
+        let nextDirection = { x: 1, y: 0 };
+        let apple = { x: 0, y: 0 };
+        let score = 0;
+        let speed = config.initialSpeed;
+        let lastUpdateTime = 0;
+        let gameOver = false;
+        let aiDecisionCounter = 0;
+        let canvas, ctx;
+        let moveHistory = [];
+        let aiDebugInfo = "";
+        let foodEatenTimes = [];
+        let lastFoodTime = 0;
+
+        // Initialize game
+        function init() {
+            canvas = document.getElementById('gameCanvas');
+            ctx = canvas.getContext('2d');
+            
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+            
+            resetGame();
+            
+            // Start game loop
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Resize canvas to fill window
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            
+            // Adjust tile size to fit grid
+            const maxTilesX = Math.floor(canvas.width / config.tileSize);
+            const maxTilesY = Math.floor(canvas.height / config.tileSize);
+            
+            // Redraw if game is running
+            if (snake.length > 0) {
+                draw();
+            }
+        }
+
+        // Reset game state
+        function resetGame() {
+            const centerX = Math.floor(canvas.width / config.tileSize / 2);
+            const centerY = Math.floor(canvas.height / config.tileSize / 2);
+            
+            snake = [
+                { x: centerX, y: centerY },
+                { x: centerX - 1, y: centerY },
+                { x: centerX - 2, y: centerY }
+            ];
+            
+            direction = { x: 1, y: 0 };
+            nextDirection = { x: 1, y: 0 };
+            score = 0;
+            speed = config.initialSpeed;
+            gameOver = false;
+            moveHistory = [];
+            foodEatenTimes = [];
+            lastFoodTime = performance.now();
+            document.getElementById('gameOver').style.display = 'none';
+            document.getElementById('score').textContent = 'SCORE: 0';
+            document.getElementById('aiInfo').textContent = 'AI: Initializing...';
+            document.getElementById('aiStats').textContent = 'Efficiency: --';
+            
+            placeApple();
+        }
+
+        // Strategic apple placement
+        function placeApple() {
+            const maxX = Math.floor(canvas.width / config.tileSize) - 1;
+            const maxY = Math.floor(canvas.height / config.tileSize) - 1;
+            const head = snake[0];
+            
+            let bestPosition = null;
+            let bestScore = -Infinity;
+            
+            for (let i = 0; i < 20; i++) {
+                const candidate = {
+                    x: Math.floor(Math.random() * maxX),
+                    y: Math.floor(Math.random() * maxY)
+                };
+                
+                const dx = Math.abs(candidate.x - head.x);
+                const dy = Math.abs(candidate.y - head.y);
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                let valid = true;
+                for (const segment of snake) {
+                    if (segment.x === candidate.x && segment.y === candidate.y) {
+                        valid = false;
+                        break;
+                    }
+                }
+                
+                if (!valid) continue;
+                
+                const distanceScore = -Math.abs(distance - config.foodPlacement.preferredDistance);
+                const wallScore = (candidate.x > 1 && candidate.x < maxX - 1 && 
+                                  candidate.y > 1 && candidate.y < maxY - 1) ? 1 : 0;
+                const directionBonus = 
+                    (candidate.x - head.x) * direction.x + (candidate.y - head.y) * direction.y > 0 ? 2 : 0;
+                
+                const totalScore = distanceScore + wallScore + directionBonus;
+                
+                if (totalScore > bestScore) {
+                    bestScore = totalScore;
+                    bestPosition = candidate;
+                }
+            }
+            
+            apple = bestPosition || {
+                x: Math.floor(Math.random() * maxX),
+                y: Math.floor(Math.random() * maxY)
+            };
+        }
+
+        // Enhanced AI control with movement history and strategic decision making
+        function aiControl() {
+            aiDecisionCounter++;
+            
+            if (aiDecisionCounter < config.ai.decisionInterval) {
+                return;
+            }
+            
+            aiDecisionCounter = 0;
+            
+            const head = snake[0];
+            const directions = [
+                { x: 1, y: 0, name: "RIGHT" },
+                { x: -1, y: 0, name: "LEFT" },
+                { x: 0, y: 1, name: "DOWN" },
+                { x: 0, y: -1, name: "UP" }
+            ];
+            
+            // Filter out invalid directions (reverse and collisions)
+            const possibleDirections = directions.filter(dir => {
+                // Can't reverse direction
+                if (dir.x === -direction.x && dir.y === -direction.y) {
+                    return false;
+                }
+                
+                const nextX = head.x + dir.x;
+                const nextY = head.y + dir.y;
+                
+                // Check for wall collision
+                if (nextX < 0 || nextX >= Math.floor(canvas.width / config.tileSize) ||
+                    nextY < 0 || nextY >= Math.floor(canvas.height / config.tileSize)) {
+                    return false;
+                }
+                
+                // Check for self-collision (except tail which will move)
+                for (let i = 0; i < snake.length - 1; i++) {
+                    if (snake[i].x === nextX && snake[i].y === nextY) {
+                        return false;
+                    }
+                }
+                
+                return true;
+            });
+            
+            if (possibleDirections.length === 0) {
+                aiDebugInfo = "AI: No valid moves!";
+                return;
+            }
+            
+            // Only 5% chance to make a random decision
+            if (Math.random() < config.ai.randomness) {
+                nextDirection = possibleDirections[Math.floor(Math.random() * possibleDirections.length)];
+                aiDebugInfo = `AI: Random move (${nextDirection.name})`;
+                return;
+            }
+            
+            // Score each possible direction
+            const scoredDirections = possibleDirections.map(dir => {
+                let score = 0;
+                
+                // Calculate next position
+                const nextX = head.x + dir.x;
+                const nextY = head.y + dir.y;
+                
+                // 1. Food seeking (98% bias)
+                if (Math.random() < config.ai.foodBias) {
+                    // Distance to food after this move
+                    const newDx = apple.x - nextX;
+                    const newDy = apple.y - nextY;
+                    const newDist = newDx * newDx + newDy * newDy;
+                    
+                    // Current distance to food
+                    const currDx = apple.x - head.x;
+                    const currDy = apple.y - head.y;
+                    const currDist = currDx * currDx + currDy * currDy;
+                    
+                    // Prefer moves that reduce distance to food
+                    if (newDist < currDist) {
+                        score += 100;
+                    } else if (newDist > currDist) {
+                        score -= 50;
+                    }
+                }
+                
+                // 2. Consider movement history (30% weight)
+                if (moveHistory.length > 0) {
+                    const historyMatch = moveHistory.filter(m => 
+                        m.x === dir.x && m.y === dir.y).length;
+                    score += historyMatch * 30 * config.ai.historyWeight;
+                }
+                
+                // 3. Prefer forward movement (reduces zig-zag)
+                if (dir.x === direction.x && dir.y === direction.y) {
+                    score += 20;
+                }
+                
+                // 4. Avoid edges
+                const nearEdgePenalty = 
+                    (nextX <= 1 || nextX >= Math.floor(canvas.width / config.tileSize) - 2 ||
+                     nextY <= 1 || nextY >= Math.floor(canvas.height / config.tileSize) - 2) ? -30 : 0;
+                score += nearEdgePenalty;
+                
+                // 5. Space assessment (prefer moves that leave more space)
+                const spaceScore = assessSpace(nextX, nextY);
+                score += spaceScore * 0.5;
+                
+                return { direction: dir, score: score };
+            });
+            
+            // Sort by score (highest first)
+            scoredDirections.sort((a, b) => b.score - a.score);
+            
+            // Choose the best direction
+            nextDirection = scoredDirections[0].direction;
+            
+            // Update movement history
+            moveHistory.unshift({ x: nextDirection.x, y: nextDirection.y });
+            if (moveHistory.length > config.ai.historyLength) {
+                moveHistory.pop();
+            }
+            
+            // Update debug info
+            const topScores = scoredDirections.slice(0, 3).map(d => 
+                `${d.direction.name}:${Math.round(d.score)}`).join(", ");
+            aiDebugInfo = `AI: ${topScores} | History: ${moveHistory.length}`;
+        }
+        
+        // Assess available space in a direction
+        function assessSpace(x, y) {
+            const visited = new Set();
+            const queue = [{ x, y }];
+            let spaceCount = 0;
+            const maxX = Math.floor(canvas.width / config.tileSize);
+            const maxY = Math.floor(canvas.height / config.tileSize);
+            
+            while (queue.length > 0 && spaceCount < 100) {
+                const current = queue.shift();
+                const key = `${current.x},${current.y}`;
+                
+                if (visited.has(key)) continue;
+                visited.add(key);
+                spaceCount++;
+                
+                // Check adjacent cells
+                const neighbors = [
+                    { x: current.x + 1, y: current.y },
+                    { x: current.x - 1, y: current.y },
+                    { x: current.x, y: current.y + 1 },
+                    { x: current.x, y: current.y - 1 }
+                ];
+                
+                for (const neighbor of neighbors) {
+                    // Check bounds
+                    if (neighbor.x < 0 || neighbor.x >= maxX || 
+                        neighbor.y < 0 || neighbor.y >= maxY) {
+                        continue;
+                    }
+                    
+                    // Check if occupied by snake
+                    let isSnake = false;
+                    for (const segment of snake) {
+                        if (segment.x === neighbor.x && segment.y === neighbor.y) {
+                            isSnake = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!isSnake && !visited.has(`${neighbor.x},${neighbor.y}`)) {
+                        queue.push(neighbor);
+                    }
+                }
+            }
+            
+            return spaceCount;
+        }
+
+        // Update game state
+        function update() {
+            if (gameOver) return;
+            
+            // AI controls the snake
+            aiControl();
+            
+            // Apply next direction (can't reverse)
+            if (!(nextDirection.x === -direction.x && nextDirection.y === -direction.y)) {
+                direction = { ...nextDirection };
+            }
+            
+            // Move snake
+            const head = { ...snake[0] };
+            head.x += direction.x;
+            head.y += direction.y;
+            
+            // Check for wall collision
+            if (head.x < 0 || head.x >= Math.floor(canvas.width / config.tileSize) ||
+                head.y < 0 || head.y >= Math.floor(canvas.height / config.tileSize)) {
+                endGame();
+                return;
+            }
+            
+            // Check for self-collision (except tail which will move)
+            for (let i = 0; i < snake.length - 1; i++) {
+                if (snake[i].x === head.x && snake[i].y === head.y) {
+                    endGame();
+                    return;
+                }
+            }
+            
+            // Add new head
+            snake.unshift(head);
+            
+            // Check for apple collision
+            if (head.x === apple.x && head.y === apple.y) {
+                const now = performance.now();
+                const timeSinceLastFood = (now - lastFoodTime) / 1000;
+                foodEatenTimes.push(timeSinceLastFood);
+                
+                // Keep only last 10 food times for average
+                if (foodEatenTimes.length > 10) {
+                    foodEatenTimes.shift();
+                }
+                
+                // Update efficiency display
+                updateEfficiencyDisplay();
+                
+                lastFoodTime = now;
+                score++;
+                document.getElementById('score').textContent = `SCORE: ${score}`;
+                speed = Math.max(50, speed - config.speedIncrease);
+                placeApple();
+            } else {
+                // Remove tail if no apple eaten
+                snake.pop();
+            }
+            
+            // Update AI debug info
+            document.getElementById('aiInfo').textContent = aiDebugInfo;
+        }
+        
+        // Update the efficiency display
+        function updateEfficiencyDisplay() {
+            if (foodEatenTimes.length === 0) {
+                document.getElementById('aiStats').textContent = 'Efficiency: --';
+                return;
+            }
+            
+            const averageTime = foodEatenTimes.reduce((sum, time) => sum + time, 0) / foodEatenTimes.length;
+            document.getElementById('aiStats').textContent = `Efficiency: ${averageTime.toFixed(1)}s/food`;
+        }
+
+        // Draw game with enhanced green gradient and fixed body alignment
+        function draw() {
+            // Clear canvas
+            ctx.fillStyle = config.colors.background;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw border
+            ctx.strokeStyle = config.colors.border;
+            ctx.lineWidth = 6;
+            ctx.strokeRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw apple (bright red with highlight)
+            ctx.fillStyle = config.colors.apple;
+            ctx.fillRect(
+                apple.x * config.tileSize,
+                apple.y * config.tileSize,
+                config.tileSize,
+                config.tileSize
+            );
+            
+            // Add highlight to apple
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.fillRect(
+                apple.x * config.tileSize + 2,
+                apple.y * config.tileSize + 2,
+                config.tileSize - 4,
+                2
+            );
+            
+            // Draw snake with smooth green gradient from head to tail
+            for (let i = 0; i < snake.length; i++) {
+                const segment = snake[i];
+                const ratio = i / snake.length;
+                
+                // Calculate color based on position in snake
+                let r, g, b;
+                if (i === 0) {
+                    // Head - dark green
+                    r = 0;
+                    g = 100;
+                    b = 0;
+                } else {
+                    // Body - gradient from dark to light green
+                    const headColor = { r: 0, g: 100, b: 0 }; // Dark green
+                    const tailColor = { r: 144, g: 238, b: 144 }; // Light green
+                    
+                    r = Math.floor(headColor.r + (tailColor.r - headColor.r) * ratio);
+                    g = Math.floor(headColor.g + (tailColor.g - headColor.g) * ratio);
+                    b = Math.floor(headColor.b + (tailColor.b - headColor.b) * ratio);
+                }
+                
+                ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                ctx.fillRect(
+                    segment.x * config.tileSize,
+                    segment.y * config.tileSize,
+                    config.tileSize,
+                    config.tileSize
+                );
+                
+                // Add pixel separation - fixed alignment
+                if (i > 0) {
+                    const prev = snake[i-1];
+                    const next = i < snake.length - 1 ? snake[i+1] : null;
+                    
+                    ctx.fillStyle = config.colors.background;
+                    
+                    // Draw separation based on both previous and next segments
+                    if (prev.x < segment.x) { // moving right
+                        ctx.fillRect(
+                            segment.x * config.tileSize,
+                            segment.y * config.tileSize,
+                            2,
+                            config.tileSize
+                        );
+                    } else if (prev.x > segment.x) { // moving left
+                        ctx.fillRect(
+                            (segment.x + 1) * config.tileSize - 2,
+                            segment.y * config.tileSize,
+                            2,
+                            config.tileSize
+                        );
+                    }
+                    
+                    if (prev.y < segment.y) { // moving down
+                        ctx.fillRect(
+                            segment.x * config.tileSize,
+                            segment.y * config.tileSize,
+                            config.tileSize,
+                            2
+                        );
+                    } else if (prev.y > segment.y) { // moving up
+                        ctx.fillRect(
+                            segment.x * config.tileSize,
+                            (segment.y + 1) * config.tileSize - 2,
+                            config.tileSize,
+                            2
+                        );
+                    }
+                    
+                    // Special case for corners to prevent gaps
+                    if (next && ((prev.x !== next.x && prev.y !== next.y))) {
+                        // This is a corner segment
+                        if (prev.x < segment.x && next.y < segment.y || 
+                            prev.y < segment.y && next.x < segment.x) {
+                            // Top-right corner
+                            ctx.fillRect(
+                                (segment.x + 1) * config.tileSize - 2,
+                                segment.y * config.tileSize,
+                                2,
+                                2
+                            );
+                        }
+                        if (prev.x > segment.x && next.y < segment.y || 
+                            prev.y < segment.y && next.x > segment.x) {
+                            // Top-left corner
+                            ctx.fillRect(
+                                segment.x * config.tileSize,
+                                segment.y * config.tileSize,
+                                2,
+                                2
+                            );
+                        }
+                        if (prev.x < segment.x && next.y > segment.y || 
+                            prev.y > segment.y && next.x < segment.x) {
+                            // Bottom-right corner
+                            ctx.fillRect(
+                                (segment.x + 1) * config.tileSize - 2,
+                                (segment.y + 1) * config.tileSize - 2,
+                                2,
+                                2
+                            );
+                        }
+                        if (prev.x > segment.x && next.y > segment.y || 
+                            prev.y > segment.y && next.x > segment.x) {
+                            // Bottom-left corner
+                            ctx.fillRect(
+                                segment.x * config.tileSize,
+                                (segment.y + 1) * config.tileSize - 2,
+                                2,
+                                2
+                            );
+                        }
+                    }
+                }
+            }
+            
+            // Add scanline effect for retro feel
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+            for (let y = 0; y < canvas.height; y += 2) {
+                ctx.fillRect(0, y, canvas.width, 1);
+            }
+        }
+
+        // End game
+        function endGame() {
+            gameOver = true;
+            document.getElementById('gameOver').style.display = 'block';
+            document.getElementById('aiInfo').textContent = 'AI: Game Over';
+            
+            // Reset game after delay
+            setTimeout(resetGame, 3000);
+        }
+
+        // Main game loop
+        function gameLoop(timestamp) {
+            if (!lastUpdateTime) lastUpdateTime = timestamp;
+            const deltaTime = timestamp - lastUpdateTime;
+            
+            if (deltaTime > speed) {
+                update();
+                draw();
+                lastUpdateTime = timestamp;
+            }
+            
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Start the game
+        window.onload = init;
+    </script>
+</body>
+</html>
